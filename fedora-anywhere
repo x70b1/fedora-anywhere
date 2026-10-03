@@ -1,0 +1,116 @@
+#!/bin/bash
+# shellcheck disable=SC2029,SC2181
+
+function print_message() {
+    # 1 - Message
+
+    printf "        %s\n" "$1"
+}
+
+function print_awesome() {
+    # 1 - Message
+
+    printf "    \033[1;32m->>\033[0m \033[1;32m%s\033[0m\n" "$1"
+}
+
+function print_error() {
+    # 1 - Message
+
+    printf '    \033[1;31m->>\033[0m \033[1;31mError:\033[0m %s\n\n' "$1"
+}
+
+function print_help() {
+    # 1 - Version
+
+    printf '\n\033[1;4mAbout\033[0m:\n'
+    printf '  \033[1;32mfedora-anywhere\033[0m Install Fedora everywhere via SSH\n\n'
+
+    printf '\033[1;4mVersion\033[0m:\n'
+    printf '  \033[31m%s\033[0m\n\n' "$1"
+
+    printf '\033[1;4mUsage\033[0m:\n'
+    printf '  \033[1;32mfedora-anywhere\033[0m \033[3m<KICKSTARTFILE>\033[0m \033[3m<SSH>\033[0m\n\n'
+
+    printf '\033[1;4mArguments\033[0m:\n'
+    printf '  \033[33m<KICKSTARTFILE>\033[0m           Path to the applied Kickstart file\n'
+    printf '  \033[33m<SSH>\033[0m                     Connection string for SSH\n\n'
+
+    printf '\033[1;4mExample\033[0m:\n'
+    printf '  \033[1;32mfedora-anywhere\033[0m fedora.ks root@server.example.com\n\n'
+}
+
+function deployment_fedora() {
+    # 1 - Connection
+    # 2 - Tempdir
+    # 3 - Repo
+    # 4 - Kickstartfile
+
+    ssh "$1" "(mkdir $2 && cd $2 && curl -L -o vmlinuz $3/images/pxeboot/vmlinuz && curl -L -o initrd.img $3/images/pxeboot/initrd.img) > /dev/null 2>&1"
+    ssh_rc="$?"
+
+    if [ "$ssh_rc" -eq 0 ]; then
+        print_message "Installer has been downloaded .."
+    else
+        print_error "Failed to download installer!"
+        exit
+    fi
+
+
+    cat "$4" | ssh "$1" "(cat > $2/anywhere.ks && cd $2 && echo anywhere.ks | cpio -c -o >> initrd.img) > /dev/null 2>&1"
+    ssh_rc="$?"
+
+    if [ "$ssh_rc" -eq 0 ]; then
+        print_message "Kickstart file has been injected .."
+    else
+        print_error "Failed to inject kickstart file!"
+        exit
+    fi
+
+
+    ssh "$1" "([ ! -f /usr/bin/kexec ] && sudo dnf -y install kexec-tools) > /dev/null 2>&1"
+    ssh_rc="$?"
+
+    if [ "$ssh_rc" -eq 0 ]; then
+        print_message "Added kexec-tools package to system .."
+    fi
+
+
+    timeout 1s ssh "$1" "(sudo kexec -l $2/vmlinuz --initrd=$2/initrd.img --command-line='inst.text inst.repo=$3 inst.ks=file:/anywhere.ks' && sudo kexec -e) > /dev/null 2>&1"
+    ssh_rc="$?"
+
+    if [ "$ssh_rc" -eq 124 ]; then
+        print_awesome "Fedora installer started successfully!"
+    else
+        if [ "$ssh_rc" -eq 0 ]; then
+            print_awesome "Fedora installer started successfully!"
+        else
+            print_error "Failed to start the Fedora installer!"
+        fi
+    fi
+}
+
+
+SCRIPT_VERSION="0.9"
+SCRIPT_TMPDIR="$(mktemp -u)"
+
+KICKSTART_FILE="$1"
+
+SSH_CONNECTION="$2"
+
+FEDORA_VERSION=44
+FEDORA_REPO="https://download.fedoraproject.org/pub/fedora/linux/releases/$FEDORA_VERSION/Server/x86_64/os"
+
+
+if [ -z "$KICKSTART_FILE" ] || [ -z "$SSH_CONNECTION" ]; then
+    print_help "$SCRIPT_VERSION"
+
+elif [ ! -f "$KICKSTART_FILE" ]; then
+    print_error "Could not find Kickstart file!"
+
+elif ! ssh -o ConnectTimeout=5 "$SSH_CONNECTION" "exit" 2> /dev/null; then
+    print_error "Could not connect to system!"
+else
+    print_awesome "Deploy Fedora anywhere!"
+
+    deployment_fedora "$SSH_CONNECTION" "$SCRIPT_TMPDIR" "$FEDORA_REPO" "$KICKSTART_FILE"
+fi
